@@ -4,7 +4,7 @@ networks:
 
 services:
   db:
-    image: postgres
+    image: postgres:17
     restart: always
     ports:
       - "5432:5432"
@@ -35,6 +35,6 @@ services:
       - "8080:8080"
     networks:
       - mynet
- 
+
 volumes:
   pgdata:

@@ -47,8 +47,9 @@ class ConversationHistory:
     def __init__(self, client: PGClient, user_id: int):
         self.client = client
         self.user_id = user_id
-        self.client.execute_query("""DROP TABLE IF EXISTS conversations;""")
+        # messages references conversations, so it must be dropped first
         self.client.execute_query("""DROP TABLE IF EXISTS messages;""")
+        self.client.execute_query("""DROP TABLE IF EXISTS conversations;""")
         self.client.execute_query("""CREATE TABLE conversations (
             id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,

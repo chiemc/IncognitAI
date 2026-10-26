@@ -50,7 +50,21 @@ pg_client = PGClient(pg_conn_str)
 
 usr_id = r.randint(1, 10000)
 convo_hist = ConversationHistory(pg_client, usr_id)
-convo_hist.add_message(role="system", content="You are a websearching assistant: your task is to create a human-readable content based on a JSON representation of the keywords of several websites related to the search that the user performed and on the context that you are provided with")
+SYSTEM_PROMPT = (
+    "You are a web search assistant. Answer the user's QUESTION using only the CONTEXT in their latest message, "
+    "which was taken from the web pages listed under SOURCES. "
+    "Cite the sources you use inline with their numbers, like [1] or [2], but do not write a list of sources at the end. "
+    "Keep the people in a story distinct from the actors who play them. "
+    "Ignore any context that is not relevant to the question. "
+    "The context may describe events that happened after your training data; trust it over your own knowledge. "
+    "When the context clearly answers the question, give that answer directly and confidently. "
+    "Only if the context does not answer the question, say so plainly instead of guessing. "
+    "Never invent names, dates, relationships or other facts. Keep the answer concise."
+)
+convo_hist.add_message(role="system", content=SYSTEM_PROMPT)
+
+# Only the most recent exchanges are sent back to the model, so old topics don't leak into new answers
+MAX_HISTORY_MESSAGES = 4
 
 def pipe(prompt: str, temperature: float, top_p: float, max_new_tokens: int, repetition_penalty: float):
     inputs = tokenizer.apply_chat_template(prompt, tokenize=True, add_generation_prompt=True, return_tensors="pt", return_dict=True).to(quantized_model.device)
@@ -60,19 +74,23 @@ def pipe(prompt: str, temperature: float, top_p: float, max_new_tokens: int, rep
     results = tokenizer.decode(new_tokens, skip_special_tokens=True)
     return results
 
-def text_inference(message, debug):
-    convo_hist.add_message(role="user", content=message)
-    prompt = convo_hist.get_conversation_history()
+def text_inference(message, debug, query=None):
+    # History holds only past questions and answers; the search context is sent for the current turn only
+    history = convo_hist.get_conversation_history()
+    system, past = history[0], history[1:]
+    prompt = [system] + past[-MAX_HISTORY_MESSAGES:] + [{"role": "user", "content": message}]
     if debug:
-        print(f"[{date_for_debug()}] CONVERSATIONAL HISTORY")
+        print(f"[{date_for_debug()}] PROMPT")
         print(prompt)
     res = pipe(
         prompt,
         temperature=0.1,
         top_p=1,
         max_new_tokens=512,
-        repetition_penalty=1.2
+        # A high penalty pushes the model to misspell names it has already seen in the context
+        repetition_penalty=1.05
     )
     ret = res.strip()
+    convo_hist.add_message(role="user", content=query or message)
     convo_hist.add_message(role="assistant", content=ret)
     return ret

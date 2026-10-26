@@ -1,5 +1,6 @@
 .env
 qdrant_storage/
+.gradio/
 __pycache__/
 .venv/
 .DS_Store

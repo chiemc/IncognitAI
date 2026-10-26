@@ -1,11 +1,8 @@
 import warnings
 warnings.filterwarnings("ignore")
 
-import nltk
 from ddgs import DDGS
-from rake_nltk import Rake
-from boilerpy3 import extractors
-import json
+import trafilatura
 import requests
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient, models
@@ -15,22 +12,18 @@ import random as rnd
 import time
 import uuid
 from datetime import datetime
-from urllib.parse import urlparse
 
-# rake-nltk needs these NLTK resources
-nltk.download("stopwords", quiet=True)
-nltk.download("punkt_tab", quiet=True)
+# How much of each page to show the model when RAG is off
+MAX_PAGE_CHARS = 1500
 
 encoder = SentenceTransformer("sentence-transformers/LaBSE")
 # Recursive splitting falls back to single newlines/spaces, so chunks actually stay near 1000 characters
 splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-extractor = extractors.ArticleExtractor()
 # Identify the bot honestly (Wikipedia's robot policy rate-limits generic or spoofed user agents)
 HEADERS = {"User-Agent": "PrAIvateSearch/0.1 (personal AI search project; python-requests)"}
 collection_name = f"cute_kitty_{rnd.randint(1,10000)}"
 qdrant_client = QdrantClient("http://localhost:6333")
 searcher = NeuralSearcher(collection_name, qdrant_client, encoder)
-r = Rake()
 
 if qdrant_client.collection_exists(collection_name):
     qdrant_client.delete_collection(collection_name)
@@ -42,19 +35,15 @@ qdrant_client.create_collection(
     ),
 )
 
-def extract_corpus(url):
-    parsed_url = urlparse(url)
-    domain = parsed_url.netloc.split('.')
-    if len(domain) > 2:
-        return domain[-2]
-    return domain[0]
-
-def upload_to_qdrant(client: QdrantClient, collection_name: str, encoder: SentenceTransformer, text: str):
+def upload_to_qdrant(client: QdrantClient, collection_name: str, encoder: SentenceTransformer, pages: list):
     try:
-        chunks = splitter.split_text(text)
         docs = []
-        for chunk in chunks:
-            docs.append({"text": chunk})
+        for url, text in pages:
+            for chunk in splitter.split_text(text):
+                # Keep the source URL with each chunk so answers can cite it
+                docs.append({"text": chunk, "url": url})
+        if not docs:
+            return False
         client.upload_points(
             collection_name=collection_name,
             points=[
@@ -89,43 +78,48 @@ def web_search(query, num_results=5, enable_rag=False, debug = True):
             if debug:
                 print(f"[{date_for_debug()}] WARNING! Web search failed (attempt {attempt + 1}/3): {e}")
             time.sleep(1)
-    urls = list(set(search_results))
-    jsonlike = {}
-    finalcont = ""
+    urls = list(dict.fromkeys(search_results))
+    pages = []
+    for url in urls:
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+            # trafilatura extracts the main article text; boilerpy3 sometimes returned embedded JSON/script data instead
+            content = (trafilatura.extract(resp.text) or "").strip()
+            if content:
+                pages.append((url, content))
+        except Exception as e:
+            if debug:
+                print(f"[{date_for_debug()}] WARNING! {e}")
+
+    # Store this search's pages BEFORE retrieving, so RAG can find them (not just chunks from older searches)
+    truth = upload_to_qdrant(qdrant_client, collection_name, encoder, pages)
+
+    # Number each source so the model can cite it as [1], [2], ...
+    sources = []
+    def source_num(url):
+        if url not in sources:
+            sources.append(url)
+        return sources.index(url) + 1
+
     context = ""
-    if len(urls) > 0:
-        for url in urls:
-            try:
-                # boilerpy3's own downloader uses Python's default user agent, which many sites block (HTTP 403)
-                resp = requests.get(url, headers=HEADERS, timeout=10)
-                resp.raise_for_status()
-                content = extractor.get_content(resp.text)
-                r.extract_keywords_from_text(content)
-                keywords = r.get_ranked_phrases()[:20]
-                jsonlike.update({url: {"keywords": keywords}})
-                finalcont += content + "\n\n"
-            except Exception as e:
-                if debug:
-                    print(f"[{date_for_debug()}] WARNING! {e}")
-                content = extract_corpus(url) + " " + " ".join(url.split("/")[3:])
-                r.extract_keywords_from_text(content)
-                keywords = r.get_ranked_phrases()[:20]
-                jsonlike.update({url: {"keywords": keywords}})
-                finalcont += content + "\n\n"
-                continue
+    if enable_rag:
+        # Retrieve the chunks most similar to the user's question, from this search and earlier ones
+        for hit in searcher.search(query, 5):
+            context += f"[{source_num(hit['url'])}] {hit['text']}\n\n"
     else:
-        jsonlike = {"keywords": "THE SEARCH DID NOT PRODUCE MEANINGFUL RESULTS (base the answer on the context, if given)"}
-    if enable_rag and finalcont:
-        res = searcher.search(finalcont, 3)
-        for i in range(len(res)):
-            context += res[i]["text"]+"\n\n"+"---------------"+"\n\n"
-    truth = upload_to_qdrant(qdrant_client, collection_name, encoder, finalcont)
-    jsonstr = json.dumps(jsonlike)
-    if truth:
-        if context:
-            return "QUERY:\n\n"+query+"\n\nKEYWORDS:\n\n"+jsonstr+"\n\nCONTEXT:\n\n"+context, f"[{date_for_debug()}] SUCCESS! Semantic memory successfully updated!"
-        else:
-            return "QUERY:\n\n"+query+"\n\nKEYWORDS:\n\n"+jsonstr, f"[{date_for_debug()}] SUCCESS! Semantic memory successfuly updated!"
+        # Without RAG, give the model the start of each page instead
+        for url, content in pages:
+            context += f"[{source_num(url)}] {content[:MAX_PAGE_CHARS]}\n\n"
+
+    # The model doesn't know the current date, so it treats recent years as "the future" without this
+    today = f"TODAY'S DATE: {datetime.now():%B %d, %Y}\n\n"
     if context:
-        return "QUERY:\n\n"+query+"\n\nKEYWORDS:\n\n"+jsonstr+"\n\nCONTEXT:\n\n"+context, f"[{date_for_debug()}] WARNING! Something went wrong while updating semantic memory"
-    return "QUERY:\n\n"+query+"\n\nKEYWORDS:\n\n"+jsonstr, f"[{date_for_debug()}] WARNING! Something went wrong while updating semantic memory"
+        source_list = "\n".join(f"[{i + 1}] {url}" for i, url in enumerate(sources))
+        prompt = f"{today}QUESTION:\n{query}\n\nSOURCES:\n{source_list}\n\nCONTEXT:\n{context}"
+    else:
+        prompt = f"{today}QUESTION:\n{query}\n\nCONTEXT:\nNo web pages could be retrieved for this question."
+
+    if truth:
+        return prompt, f"[{date_for_debug()}] SUCCESS! Semantic memory successfully updated!", sources
+    return prompt, f"[{date_for_debug()}] WARNING! Something went wrong while updating semantic memory", sources

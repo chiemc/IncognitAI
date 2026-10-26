@@ -1,14 +1,8 @@
 import warnings
 warnings.filterwarnings("ignore")
 
-import nltk
 import torch
 from transformers import AutoProcessor, Florence2ForConditionalGeneration
-from rake_nltk import Metric, Rake
-
-# rake-nltk needs these NLTK resources
-nltk.download("stopwords", quiet=True)
-nltk.download("punkt_tab", quiet=True)
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
@@ -18,18 +12,6 @@ model = Florence2ForConditionalGeneration.from_pretrained("florence-community/Fl
 processor = AutoProcessor.from_pretrained("florence-community/Florence-2-large")
 
 task_prompt = "<DETAILED_CAPTION>"
-raker = Rake(include_repeated_phrases=False, ranking_metric=Metric.WORD_DEGREE)
-
-def extract_keywords_from_caption(caption: str) -> str:
-    raker.extract_keywords_from_text(caption)
-    keywords = raker.get_ranked_phrases()[:5]
-    fnl = []
-    for keyword in keywords:
-        if "image" in keyword:
-            continue
-        else:
-            fnl.append(keyword)
-    return " ".join(fnl)
 
 def caption_image(image):
     global task_prompt
@@ -45,6 +27,5 @@ def caption_image(image):
 
     parsed_answer = processor.post_process_generation(generated_text, task=task_prompt, image_size=(image.width, image.height))
 
-    caption = parsed_answer["<DETAILED_CAPTION>"]
-    search_words = extract_keywords_from_caption(caption)
-    return search_words
+    # Return the whole caption: RAKE keywords dropped important words like "Bandwidth's" and added noise
+    return parsed_answer["<DETAILED_CAPTION>"].strip()

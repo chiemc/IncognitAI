@@ -10,7 +10,7 @@ Based on the Hugging Face tutorial [*Building an AI-powered search engine from s
             ┌──────────────┐
  query ───▶ │  Gradio UI   │  app.py
  (+ image)  └──────┬───────┘
-                   │ image? ──▶ Florence-2 caption ──▶ RAKE keywords      image_gen.py
+                   │ image? ──▶ Florence-2 caption, added to the question  image_gen.py
                    ▼
         ┌─────────────────────┐
         │  DuckDuckGo search  │ ──▶ fetch pages ──▶ trafilatura text extraction websearching.py
@@ -32,7 +32,6 @@ Based on the Hugging Face tutorial [*Building an AI-powered search engine from s
 | UI | Gradio |
 | Web search | `ddgs` (DuckDuckGo) |
 | Page text extraction | trafilatura + requests |
-| Keyword extraction (image captions) | rake-nltk |
 | Embeddings | `sentence-transformers/LaBSE` |
 | Vector DB | Qdrant (Docker) |
 | Conversation memory | PostgreSQL 17 (Docker) + SQLAlchemy |
@@ -90,6 +89,7 @@ The question is sent to the search engine as written, so phrase it the way you'd
 - **Name the subject every time.** Follow-up questions are not rewritten yet, so "When was it founded?" searches for exactly that. Write "When was Canberra founded?" instead.
 - **Say whether you mean a character or the real person.** "John B and Sarah relationship Outer Banks" vs. "Chase Stokes girlfriend."
 - **Ask one thing per question**, and include the year or season for anything that changes over time.
+- **For image searches, also type a question** (e.g. "What is this company's internship program about?"). The question and the image description are searched together.
 - Keep **Enable Rag** on. It gives the model the passages most relevant to your question.
 - Answers cite sources inline ([1], [2]), and the links are listed under each answer. Click through to check important facts.
 
@@ -113,6 +113,7 @@ Getting this running took 17 fixes, including a native crash in the model loader
 ## Known limitations
 
 - **Slow on a 16 GB Mac: 4–5 minutes per answer.** Qwen at fp16 (about 6 GB), Florence-2 at fp32 on the CPU, LaBSE and Docker together pushed the system about 10 GB into swap. Web search and page fetching take only about 30 seconds. Nearly all the time goes to LLM generation, and that is slowed by swapping.
+- **Image search describes images; it can't recognize faces.** Florence-2 can read text in an image and describe what's in it ("a man with a beard"), but it can't tell you *who* someone is. A screenshot works when the person's name is visible on screen.
 - **Follow-up questions are searched literally.** "When was it founded?" goes to the search engine word for word, so it returns unrelated results. The chat history reaches the LLM but not the search.
 - **SQL is built with f-strings** in `memory.py`. Quotes are escaped, but parameterized queries would be safer.
 - **Debug output:** `print` statements instead of a logging framework.

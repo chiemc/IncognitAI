@@ -9,6 +9,7 @@ from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 from rag import NeuralSearcher
 import random as rnd
+import re
 import time
 import uuid
 from datetime import datetime
@@ -34,6 +35,18 @@ qdrant_client.create_collection(
         distance=models.Distance.COSINE,
     ),
 )
+
+# Photo credits like "ROBERT VIGLASKY/NETFLIX" sit next to captions about the people pictured,
+# and the model misread the photographer as the actor; drop "First Last/Outlet" credits for common outlets
+PHOTO_OUTLETS = (
+    "Netflix|Getty Images|WireImage|FilmMagic|Shutterstock|Alamy|Everett Collection|Kobal|AP|AFP|Reuters|EPA|"
+    "HBO|Max|BBC|Disney\\+?|Hulu|Apple TV\\+?|Amazon|Prime Video|Paramount\\+?|Peacock|NBC|CBS|ABC|FOX|"
+    "Warner Bros\\.?|Universal|Sony|Lionsgate|A24|Instagram|Bloomberg"
+)
+PHOTO_CREDIT = re.compile(rf"\b(?:[A-Z][\w.'’-]+ ){{1,3}}[A-Z][\w.'’-]+/(?:{PHOTO_OUTLETS})(?=\b|[A-Z])", re.IGNORECASE)
+
+def strip_photo_credits(text: str) -> str:
+    return PHOTO_CREDIT.sub("", text)
 
 def upload_to_qdrant(client: QdrantClient, collection_name: str, encoder: SentenceTransformer, pages: list):
     try:
@@ -85,7 +98,7 @@ def web_search(query, num_results=5, enable_rag=False, debug = True):
             resp = requests.get(url, headers=HEADERS, timeout=10)
             resp.raise_for_status()
             # trafilatura extracts the main article text; boilerpy3 sometimes returned embedded JSON/script data instead
-            content = (trafilatura.extract(resp.text) or "").strip()
+            content = strip_photo_credits(trafilatura.extract(resp.text) or "").strip()
             if content:
                 pages.append((url, content))
         except Exception as e:
@@ -103,9 +116,10 @@ def web_search(query, num_results=5, enable_rag=False, debug = True):
         return sources.index(url) + 1
 
     context = ""
-    if enable_rag:
-        # Retrieve the chunks most similar to the user's question, from this search and earlier ones
-        for hit in searcher.search(query, 5):
+    if enable_rag and pages:
+        # Retrieve the chunks most similar to the user's question, from this search's pages only:
+        # chunks left over from earlier searches kept leaking unrelated topics into answers
+        for hit in searcher.search(query, 5, urls=[url for url, _ in pages]):
             context += f"[{source_num(hit['url'])}] {hit['text']}\n\n"
     else:
         # Without RAG, give the model the start of each page instead

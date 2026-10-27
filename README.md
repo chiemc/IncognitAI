@@ -4,6 +4,9 @@
 
 A self-hosted, Perplexity-style search engine. You ask a question, or upload an image. The app searches the web, reads the result pages, stores them in a vector database for retrieval-augmented generation (RAG), and writes an answer with a local LLM. All the models run on your own machine.
 
+> [!WARNING]
+> **IncognitAI can make mistakes.** It uses a small AI model that sometimes misreads its sources or adds details that aren't in them, such as confusing who is related to whom or naming the wrong actor. Every answer lists its sources, so check important facts there, and don't rely on it for medical, legal or financial decisions.
+
 Based on the Hugging Face tutorial [*Building an AI-powered search engine from scratch*](https://huggingface.co/blog/as-cle-bert/build-an-ai-powered-search-engine-from-scratch) ([AstraBert/PrAIvateSearch](https://github.com/AstraBert/PrAIvateSearch)). The tutorial targets an older library stack and a CUDA GPU, so getting it running on an Apple Silicon Mac with current libraries took the debugging written up in [DEBUGGING.md](DEBUGGING.md).
 
 ## Architecture

@@ -1,10 +1,9 @@
 import warnings
 warnings.filterwarnings("ignore")
 
-import accelerate
-
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import atexit
+from huggingface_hub import hf_hub_download
+from llama_cpp import Llama
 from dotenv import load_dotenv
 from memory import ConversationHistory, PGClient
 import os
@@ -13,33 +12,44 @@ from websearching import date_for_debug
 
 load_dotenv()
 
-model_name = "Qwen/Qwen2.5-3B-Instruct"
+# Qwen's official 4-bit GGUF builds, run with llama.cpp. llama.cpp uses Metal on Apple Silicon,
+# CUDA on NVIDIA and the CPU elsewhere, with the same code. LLM_SIZE in .env picks the size;
+# see .env.example for the tradeoffs.
+MODELS = {
+    "3b": {
+        "label": "Qwen 2.5 3B",
+        "repo_id": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+        "filename": "qwen2.5-3b-instruct-q4_k_m.gguf",
+    },
+    "7b": {
+        "label": "Qwen 2.5 7B",
+        "repo_id": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        # The 7B file is published in two parts; llama.cpp loads both from the first
+        "filename": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+        "additional_files": ["qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf"],
+    },
+}
+llm_size = os.getenv("LLM_SIZE", "3b").strip().lower()
+if llm_size not in MODELS:
+    raise SystemExit(f"LLM_SIZE in .env must be one of {', '.join(MODELS)} (got '{llm_size}')")
+model = MODELS[llm_size]
+MODEL_LABEL = model["label"]
 
-# bitsandbytes 4-bit quantization only works on CUDA; fall back to MPS (Apple Silicon) or CPU unquantized
-if torch.cuda.is_available():
-    device = "cuda:0"
-    dtype = torch.bfloat16
-    quantization_config = BitsAndBytesConfig(load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type= "nf4"
-    )
-elif torch.backends.mps.is_available():
-    device = "mps"
-    dtype = torch.float16
-    quantization_config = None
-else:
-    device = "cpu"
-    dtype = torch.float32
-    quantization_config = None
+# hf_hub_download reuses files already on disk and works offline (HF_HUB_OFFLINE=1), unlike
+# Llama.from_pretrained, which asks huggingface.co for the file list on every start
+model_path = hf_hub_download(model["repo_id"], model["filename"])
+for extra_file in model.get("additional_files", []):
+    hf_hub_download(model["repo_id"], extra_file)  # lands next to the first part, where llama.cpp looks for it
 
-if quantization_config is not None:
-    quantized_model = AutoModelForCausalLM.from_pretrained(model_name, device_map=device, dtype=dtype, quantization_config=quantization_config)
-else:
-    # device_map="mps" crashes the loader (double free) on Apple Silicon, so load on CPU and move it afterwards
-    quantized_model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype).to(device)
-# Qwen2.5 already ships a ChatML chat template, so no extra chat formatting is needed
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+llm = Llama(
+    model_path=model_path,
+    n_gpu_layers=-1,  # put every layer on the GPU when there is one
+    n_ctx=8192,       # room for the search context plus recent history
+    verbose=False,
+)
+# Free the model before Python shuts down: otherwise llama.cpp's Metal backend aborts on exit
+# (GGML_ASSERT in ggml_metal_device_free) and prints a native backtrace every time the app stops
+atexit.register(llm.close)
 
 pg_db = os.getenv("PG_DB")
 pg_user = os.getenv("PG_USER")
@@ -69,13 +79,16 @@ convo_hist.add_message(role="system", content=SYSTEM_PROMPT)
 # Only the most recent exchanges are sent back to the model, so old topics don't leak into new answers
 MAX_HISTORY_MESSAGES = 4
 
-def pipe(prompt: str, temperature: float, top_p: float, max_new_tokens: int, repetition_penalty: float):
-    inputs = tokenizer.apply_chat_template(prompt, tokenize=True, add_generation_prompt=True, return_tensors="pt", return_dict=True).to(quantized_model.device)
-    outputs = quantized_model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=True, temperature=temperature, top_p=top_p, repetition_penalty=repetition_penalty)
-    # Decode only the newly generated tokens, not the prompt/history
-    new_tokens = outputs[0][inputs["input_ids"].shape[-1]:]
-    results = tokenizer.decode(new_tokens, skip_special_tokens=True)
-    return results
+def pipe(prompt: list, temperature: float, top_p: float, max_new_tokens: int, repetition_penalty: float):
+    # llama.cpp applies Qwen's chat template from the GGUF file and returns only the new answer
+    out = llm.create_chat_completion(
+        messages=prompt,
+        max_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        repeat_penalty=repetition_penalty,
+    )
+    return out["choices"][0]["message"]["content"]
 
 def text_inference(message, debug, query=None):
     # History holds only past questions and answers; the search context is sent for the current turn only

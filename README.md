@@ -37,21 +37,24 @@ Based on the Hugging Face tutorial [*Building an AI-powered search engine from s
 | Embeddings | `sentence-transformers/LaBSE` |
 | Vector DB | Qdrant (Docker) |
 | Conversation memory | PostgreSQL 17 (Docker) + SQLAlchemy |
-| LLM | `Qwen/Qwen2.5-3B-Instruct` (transformers; 4-bit on CUDA, fp16 on Apple MPS) |
+| LLM | Qwen2.5-Instruct 3B (default) or 7B, 4-bit GGUF, run with `llama-cpp-python` |
 | Image captioning | Florence-2-large (native transformers implementation) |
 
 ## Privacy
 
 The AI models (the answer model, the embedding model and image captioning) run entirely on your machine, and your conversation history stays in a local database. No queries go to an AI company. To answer a question, the app does send your search to DuckDuckGo and downloads the result pages, the same as searching in a browser would.
 
+After the first run, the models load from your disk without contacting Hugging Face. You can check this by starting the app with downloads blocked: `HF_HUB_OFFLINE=1 python app.py`.
+
 ## Setup
 
 ### Requirements
 - **Python 3.12**
 - **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**, which runs the Postgres and Qdrant databases
-- **About 15 GB of free disk space**, mostly for the model weights downloaded on first run
-- **RAM:** 16 GB minimum, and 32 GB is much faster (see [Known limitations](#known-limitations))
-- **Hardware:** an Apple Silicon Mac (uses the GPU through MPS), or a machine with an NVIDIA GPU (uses 4-bit quantization through CUDA). CPU-only machines work, but slowly.
+- **About 10 GB of free disk space**, mostly for the model weights downloaded on first run
+- **RAM:** 16 GB recommended, or 32 GB to use the larger 7B answer model
+- **Hardware:** an Apple Silicon Mac (the answer model uses the GPU through Metal automatically), or a machine with an NVIDIA GPU (see the note under setup). CPU-only machines work, but more slowly.
+- **A C/C++ compiler,** because `pip` may build `llama-cpp-python` from source. Macs have one once Xcode Command Line Tools are installed (`xcode-select --install`). Windows needs the Visual Studio Build Tools.
 
 ### First-time setup
 ```bash
@@ -59,7 +62,7 @@ The AI models (the answer model, the embedding model and image captioning) run e
 git clone https://github.com/chiemc/IncognitAI.git
 cd IncognitAI
 
-# 2. Create your config file, then edit .env and choose a password
+# 2. Create your config file, then edit .env: choose a password and, optionally, the model size
 cp .env.example .env
 
 # 3. Install Python dependencies into a virtual environment
@@ -67,6 +70,34 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+Installing `llama-cpp-python` can take a few minutes, because it compiles llama.cpp for your machine. On a Mac it is built with Metal (GPU) support automatically. **NVIDIA users:** to run the answer model on the GPU, install it with CUDA support before the other requirements:
+```bash
+CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+```
+
+### Choosing the answer model
+`LLM_SIZE` in `.env` selects which Qwen model writes the answers. Restart the app after changing it.
+
+| | `3b` (default) | `7b` |
+|---|---|---|
+| Memory | ~2.6 GB | ~5.5 GB (32 GB of RAM recommended) |
+| Answer generation | ~2–6 s | roughly twice as long |
+| Download | 2.1 GB | 4.7 GB more |
+| Accuracy | Good, but sometimes misreads relationships in its sources | Better reading comprehension; still makes occasional mistakes |
+
+The app shows which model is active under its title.
+
+**Going back to 3B and reclaiming the disk space:**
+1. Set `LLM_SIZE=3b` in `.env` and restart the app. Do this first: otherwise the next start downloads the 7B again.
+2. Delete the 7B model files (4.7 GB), with the virtual environment active:
+   ```bash
+   hf cache ls                                                   # list stored models and their sizes
+   hf cache rm model/Qwen/Qwen2.5-7B-Instruct-GGUF --dry-run     # preview; deletes nothing
+   hf cache rm model/Qwen/Qwen2.5-7B-Instruct-GGUF               # delete (asks to confirm)
+   ```
+3. Run `hf cache ls` again. The 7B should be gone, and `Qwen2.5-3B-Instruct-GGUF` (the default model) should still be listed.
+
+If you deleted the wrong model by mistake, nothing is lost for good: the app downloads whichever model it needs on its next start.
 
 ### Running it
 ```bash
@@ -79,7 +110,7 @@ source .venv/bin/activate
 # 3. Start the app, then open http://localhost:7860
 python app.py
 ```
-The first launch downloads about 8 GB of models, which can take a while. Later launches take about a minute.
+The first launch downloads about 5.5 GB of models (Qwen 2.1 GB, LaBSE and Florence-2), which can take a while. Later launches take about 15–30 seconds.
 
 **When you're done:** press `Ctrl+C` in the terminal running the app, then run `docker compose down` to stop the databases. Your data is kept for next time.
 
@@ -105,7 +136,7 @@ The question is sent to the search engine as written, so phrase it the way you'd
 | `ModuleNotFoundError` | The virtual environment isn't active | `source .venv/bin/activate` |
 | `password authentication failed` | `.env` was changed after the database was first created | `docker compose down -v` (this deletes stored history), then `docker compose up -d` |
 | `403` / `402` / `405` / `Failed to resolve` warnings in the log | Some websites block bots, are paywalled, or no longer exist | Normal: those pages are skipped. If answers are thin, raise the results slider. |
-| Answers take several minutes instead of 30–60 seconds | Not enough free RAM, so the system is swapping to disk | Close other apps, and check that only one copy of the app is running: `lsof -i :7860` |
+| Answers take minutes instead of seconds | Not enough free RAM, so the system is swapping to disk | Close other apps, and check that only one copy of the app is running: `lsof -i :7860` |
 
 
 ## How it was debugged
@@ -114,7 +145,7 @@ Getting this running took 17 fixes, including a native crash in the model loader
 
 ## Known limitations
 
-- **30–60 seconds per answer on a 16 GB M1 Pro.** That compares with a few seconds for hosted AI search. It covers the web search, page downloads and answer generation with Qwen at fp16 (about 6 GB). Memory is tight: Qwen, Florence-2 (fp32 on the CPU), LaBSE and Docker together use most of 16 GB. If anything else large is running, including an accidental second copy of the app, the system starts swapping to disk and answers can take several minutes.
+- **About 10–20 seconds per text answer on a 16 GB M1 Pro, plus about 9 seconds when an image is attached.** That compares with a few seconds for hosted AI search. Measured breakdown: web search ~2.5 s, downloading and extracting 5 pages ~4 s, embedding ~2 s, generating the answer ~2–6 s, captioning an image ~8.5 s. Most of the time now goes to the web, not the model. If memory runs short (for example, an accidental second copy of the app), the system swaps to disk and answers can take minutes.
 - **Image search describes images; it can't recognize faces.** Florence-2 can read text in an image and describe what's in it ("a man with a beard"), but it can't tell you *who* someone is. A screenshot works when the person's name is visible on screen.
 - **Follow-up questions are searched literally.** "When was it founded?" goes to the search engine word for word, so it returns unrelated results. The chat history reaches the LLM but not the search.
 - **SQL is built with f-strings** in `memory.py`. Quotes are escaped, but parameterized queries would be safer.
@@ -122,6 +153,6 @@ Getting this running took 17 fixes, including a native crash in the model loader
 
 ## Roadmap
 
-1. **Speed:** serve the LLM through Ollama or MLX at 4-bit (about 2 GB instead of 6 GB, typically 3–5× faster on Apple Silicon); stream tokens to the UI; fetch pages in parallel; load Florence-2 only when an image is uploaded.
+1. **Speed:** ~~run Qwen at 4-bit~~ (done: switched to `llama-cpp-python`, see [DEBUGGING.md](DEBUGGING.md)); download pages in parallel (the largest remaining cost); stream tokens to the UI so text appears as it's written; run Florence-2 on the GPU, or load it only when an image is uploaded.
 2. **Answer quality:** use the chat history to rewrite follow-up questions into standalone search queries; switch to a chat-style UI (`gr.ChatInterface`). (Numbered citations are done; see [DEBUGGING.md](DEBUGGING.md).)
 3. **A browser assistant, in the spirit of Perplexity's Comet:** expose the pipeline as a FastAPI backend and build a Chrome sidebar extension that can summarize or answer questions about the current page.

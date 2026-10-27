@@ -7,6 +7,7 @@ Each entry gives the symptom, the root cause, the fix, and what it taught me. Th
 **Contents**
 - [Highlights](#highlights)
   - [The app ran, but its answers were confidently wrong](#the-app-ran-but-its-answers-were-confidently-wrong)
+  - [Measuring before optimizing: switching the model runtime](#measuring-before-optimizing-switching-the-model-runtime)
   - [Native crash: `malloc: double free` while loading the model](#native-crash-malloc-double-free-while-loading-the-model)
   - [Google search silently returned zero results](#google-search-silently-returned-zero-results)
   - [RAG chunks were 27× too big](#rag-chunks-were-27-too-big)
@@ -45,6 +46,30 @@ One attempted fix in round 3 made things worse. I added "start yes/no answers wi
 - "The model is too small" is often not the real reason a RAG system answers badly. Check what text actually reaches the model before blaming the model.
 - Small models follow instructions very literally. Treat prompt changes like code changes and re-test against known-answer questions every time.
 
+### Measuring before optimizing: switching the model runtime
+
+**Plan:** Qwen ran through Hugging Face `transformers` at fp16 (about 6 GB), because bitsandbytes 4-bit quantization only works on NVIDIA GPUs. The plan was to switch to a 4-bit build for speed. I chose `llama-cpp-python` over Ollama (which adds a separate app for every user to install and run) and over MLX (Apple-only), because it installs with `pip` like the rest of the project and runs on Metal, CUDA or the CPU with the same code.
+
+**Measure first.** Before switching, I searched once, saved six test prompts, and ran both runtimes on *identical* input, so differences in search results couldn't skew the timing or accuracy comparison. I also timed every stage of a query. The surprise: generation was only **3–10 s** of each query. The rest was the web: search ~2.5 s, page downloads ~4 s, embeddings ~2 s, plus ~8.5 s to caption an image. My original prediction of a 3–5× speedup was wrong because I had assumed the model was the bottleneck.
+
+**Results:**
+
+| | `transformers` fp16 | `llama-cpp-python` 4-bit |
+|---|---|---|
+| Generation time, 6 test prompts | 33.4 s | 21.9 s (**1.5×** faster; the new answers are also a bit shorter) |
+| Startup (model, LaBSE, database) | 34.9 s | 15.6 s |
+| Peak memory | ~9 GB | **~2.6 GB** |
+| Accuracy on the 6 known-answer questions | 6/6 | 6/6 |
+| Model download | ~6 GB | 2.1 GB |
+
+The real win is **memory**. Running out of RAM, not the model itself, is what had made answers take minutes. The switch also deleted the workarounds for `transformers` on Apple Silicon: the MPS loading crash, the dict returned by `apply_chat_template`, and manually trimming the prompt tokens from the output.
+
+**A new bug: abort on exit.** Every shutdown printed a native backtrace: `GGML_ASSERT([rsets->data count] == 0) failed` in `ggml_metal_device_free`. The model's Metal (GPU) resources were still alive when Python's process-exit cleanup tore the Metal device down. **Fix:** `atexit.register(llm.close)` frees the model first. Verifying the fix taught me a testing lesson too: my first Ctrl+C test sent SIGINT to an app I'd started in the background with `&`, and background jobs in a non-interactive shell *ignore* SIGINT, so the app never stopped. Starting it with the default SIGINT handler restored showed a clean exit (code 0, no assert).
+
+**A hidden network dependency.** After deleting an old model from the cache, I tested the app with Hugging Face downloads blocked (`HF_HUB_OFFLINE=1`) to prove nothing still needed it. The deletion was fine, but the app failed to start anyway: `Llama.from_pretrained` asks huggingface.co for the model's file list on *every* start, even when the model is already on disk. A "private, local" app that can't start without the internet undercut the project's main claim. **Fix:** fetch the files with `hf_hub_download`, which reuses the copies on disk and respects offline mode, then pass the local path to `Llama(model_path=...)`. Now all three models load fully offline.
+
+**Lessons:** Profile before optimizing, since the bottleneck I assumed wasn't the real one. And a benchmark is only fair if both sides get identical input.
+
 ### Native crash: `malloc: double free` while loading the model
 
 **Symptom:** The process aborted partway through "Loading weights," with no Python traceback.
@@ -56,6 +81,8 @@ One attempted fix in round 3 made things worse. I added "start yes/no answers wi
 **Fix:** On MPS, load on the CPU first and then move the model to the GPU.
 
 **Lesson:** When a crash happens in native code, cut the program down to the smallest reproduction and change one variable at a time.
+
+*Superseded:* Qwen now runs on `llama-cpp-python`, so this workaround is gone (see the runtime switch above).
 
 ### Google search silently returned zero results
 
@@ -87,12 +114,14 @@ One attempted fix in round 3 made things worse. I added "start yes/no answers wi
 Point IDs came from `enumerate(docs)`, so every search wrote IDs 0..n and replaced the last search's chunks. RAG could only ever "remember" one search. **Fix:** `uuid.uuid4()` for point IDs. **Lesson:** In a key-value store, ID collisions don't raise errors. They overwrite data silently.
 
 ### Breaking API changes in transformers 5
+*Superseded:* these applied to running Qwen through `transformers`, which was replaced by `llama-cpp-python`.
 - `apply_chat_template(..., return_tensors="pt")` now returns a **dict** by default, so `model.generate(tokenized_chat)` broke. **Fix:** pass `return_dict=True` and call `generate(**inputs)`.
 - **The wrong answer was returned:** the code took `decoded_output.split("<|im_start|>assistant\n")[1]`. With conversation history in the prompt, that's the *first* assistant reply in the history, not the new one. **Fix:** decode only the newly generated tokens, `outputs[0][input_len:]`.
 - `temperature` was being ignored because sampling wasn't enabled. **Fix:** `do_sample=True`.
 - I removed TRL's `setup_chat_format`. It cleared Qwen's built-in chat template and resized the token embeddings, even though Qwen already uses the ChatML format it was adding.
 
 ### Hardcoded CUDA on a Mac
+*Superseded:* `llama-cpp-python` now picks Metal, CUDA or the CPU itself.
 The code used `device_map="cuda:0"` with bitsandbytes 4-bit quantization, and my M1 Pro has no CUDA. **Fix:** pick the device at runtime: CUDA with 4-bit quantization, then Apple MPS at fp16, then CPU at fp32. `bitsandbytes` is installed only on non-macOS systems, using a platform marker in `requirements.txt`.
 
 ### Florence-2 remote code isn't compatible with transformers 5

@@ -50,32 +50,73 @@ After the first run, the models load from your disk without contacting Hugging F
 
 ### Requirements
 - **Python 3.12**
-- **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**, which runs the Postgres and Qdrant databases
-- **About 10 GB of free disk space**, mostly for the model weights downloaded on first run
-- **RAM:** 16 GB recommended, or 32 GB to use the larger 7B answer model
-- **Hardware:** an Apple Silicon Mac (the answer model uses the GPU through Metal automatically), or a machine with an NVIDIA GPU (see the note under setup). CPU-only machines work, but more slowly.
-- **A C/C++ compiler,** because `pip` may build `llama-cpp-python` from source. Macs have one once Xcode Command Line Tools are installed (`xcode-select --install`). Windows needs the Visual Studio Build Tools.
+- **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**, which runs the two databases (Postgres and Qdrant)
+- **About 10 GB of free disk space** for the AI models, Python packages and databases
+- **16 GB of RAM** (32 GB if you want the larger 7B answer model; see [below](#optional-choosing-the-answer-model))
+- **A C/C++ compiler.** One package, `llama-cpp-python`, is compiled on your computer during installation.
+  - **Mac:** run `xcode-select --install` once, if you haven't already.
+  - **Windows:** install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" option.
+  - **Linux:** usually already installed (`gcc`).
 
-### First-time setup
+The app uses your GPU automatically on Apple Silicon Macs. On a computer with an NVIDIA GPU, it uses the GPU if you follow the NVIDIA step below. Other computers run on the CPU, which works but is slower.
+
+### Install (once)
+The commands below are for macOS and Linux. On Windows, use `copy` instead of `cp` and `.venv\Scripts\activate` instead of `source .venv/bin/activate`.
+
+**1. Download the code**
 ```bash
-# 1. Get the code
 git clone https://github.com/chiemc/IncognitAI.git
 cd IncognitAI
+```
 
-# 2. Create your config file, then edit .env: choose a password and, optionally, the model size
+**2. Create your settings file**, then open `.env` and change `PG_PASSWORD` to a password of your choice
+```bash
 cp .env.example .env
+```
 
-# 3. Install Python dependencies into a virtual environment
+**3. Create and activate a virtual environment**
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
+```
+Your prompt now starts with `(.venv)`. Run `python3 --version` first if you're unsure which Python you have: it needs to be 3.12.
+
+**4. Install the Python packages**
+
+*Mac, or a computer without an NVIDIA GPU:*
+```bash
 pip install -r requirements.txt
 ```
-Installing `llama-cpp-python` can take a few minutes, because it compiles llama.cpp for your machine. On a Mac it is built with Metal (GPU) support automatically. **NVIDIA users:** to run the answer model on the GPU, install it with CUDA support before the other requirements:
+
+*Computer with an NVIDIA GPU:* run these two commands in this order. The first builds `llama-cpp-python` with GPU support; the second installs everything else.
 ```bash
-CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+CMAKE_ARGS="-DGGML_CUDA=on" pip install --no-cache-dir llama-cpp-python==0.3.36
+pip install -r requirements.txt
 ```
 
-### Choosing the answer model
+Expect this step to take a few minutes. Most of that is compiling `llama-cpp-python`, and it may look stuck at "Building wheel for llama-cpp-python" for a minute or two. That's normal.
+
+### Run it
+Each time you want to use the app:
+```bash
+# 1. Open Docker Desktop and wait until it's running, then start the databases
+docker compose up -d
+
+# 2. Activate the virtual environment (needed in every new terminal)
+source .venv/bin/activate
+
+# 3. Start the app
+python app.py
+```
+Then open **http://localhost:7860** in your browser.
+
+The first start downloads about 5.5 GB of AI models, so it can take a while. Later starts take about 15–30 seconds.
+
+**When you're done:** press `Ctrl+C` in the terminal running the app, then run `docker compose down` to stop the databases. Your data is kept for next time.
+
+Adminer, a web page for looking inside the Postgres database, runs at http://localhost:8080 while the databases are up.
+
+### Optional: choosing the answer model
 `LLM_SIZE` in `.env` selects which Qwen model writes the answers. Restart the app after changing it.
 
 | | `3b` (default) | `7b` |
@@ -99,23 +140,6 @@ The app shows which model is active under its title.
 
 If you deleted the wrong model by mistake, nothing is lost for good: the app downloads whichever model it needs on its next start.
 
-### Running it
-```bash
-# 1. Open Docker Desktop and wait until it's running, then start the databases
-docker compose up -d
-
-# 2. Activate the virtual environment (needed in every new terminal)
-source .venv/bin/activate
-
-# 3. Start the app, then open http://localhost:7860
-python app.py
-```
-The first launch downloads about 5.5 GB of models (Qwen 2.1 GB, LaBSE and Florence-2), which can take a while. Later launches take about 15–30 seconds.
-
-**When you're done:** press `Ctrl+C` in the terminal running the app, then run `docker compose down` to stop the databases. Your data is kept for next time.
-
-Adminer, a web interface for viewing the Postgres database, runs at http://localhost:8080 while the databases are up.
-
 ## Usage tips
 
 The question is sent to the search engine as written, so phrase it the way you'd type into a search engine:
@@ -134,6 +158,7 @@ The question is sent to the search engine as written, so phrase it the way you'd
 | `address already in use` on port 7860 | An earlier copy of the app is still running | `lsof -ti :7860 \| xargs kill`, then start it again |
 | `unknown shorthand flag: 'd' in -d` | Docker didn't recognize `compose`: a typo, or a terminal opened before Docker Desktop started | Retype the command by hand, or open a new terminal |
 | `ModuleNotFoundError` | The virtual environment isn't active | `source .venv/bin/activate` |
+| `Failed building wheel for llama-cpp-python` during install | No C/C++ compiler | Install one (see [Requirements](#requirements)), then run the install step again |
 | `password authentication failed` | `.env` was changed after the database was first created | `docker compose down -v` (this deletes stored history), then `docker compose up -d` |
 | `403` / `402` / `405` / `Failed to resolve` warnings in the log | Some websites block bots, are paywalled, or no longer exist | Normal: those pages are skipped. If answers are thin, raise the results slider. |
 | Answers take minutes instead of seconds | Not enough free RAM, so the system is swapping to disk | Close other apps, and check that only one copy of the app is running: `lsof -i :7860` |
@@ -150,9 +175,3 @@ Getting this running took 17 fixes, including a native crash in the model loader
 - **Follow-up questions are searched literally.** "When was it founded?" goes to the search engine word for word, so it returns unrelated results. The chat history reaches the LLM but not the search.
 - **SQL is built with f-strings** in `memory.py`. Quotes are escaped, but parameterized queries would be safer.
 - **Debug output:** `print` statements instead of a logging framework.
-
-## Roadmap
-
-1. **Speed:** ~~run Qwen at 4-bit~~ (done: switched to `llama-cpp-python`, see [DEBUGGING.md](DEBUGGING.md)); download pages in parallel (the largest remaining cost); stream tokens to the UI so text appears as it's written; run Florence-2 on the GPU, or load it only when an image is uploaded.
-2. **Answer quality:** use the chat history to rewrite follow-up questions into standalone search queries; switch to a chat-style UI (`gr.ChatInterface`). (Numbered citations are done; see [DEBUGGING.md](DEBUGGING.md).)
-3. **A browser assistant, in the spirit of Perplexity's Comet:** expose the pipeline as a FastAPI backend and build a Chrome sidebar extension that can summarize or answer questions about the current page.

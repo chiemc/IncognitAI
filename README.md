@@ -1,4 +1,6 @@
-# AI-Powered Private Search Engine
+# IncognitAI
+
+**An AI-powered private search engine.**
 
 A self-hosted, Perplexity-style search engine. You ask a question, or upload an image. The app searches the web, reads the result pages, stores them in a vector database for retrieval-augmented generation (RAG), and writes an answer with a local LLM. All the models run on your own machine.
 
@@ -54,8 +56,8 @@ The AI models (the answer model, the embedding model and image captioning) run e
 ### First-time setup
 ```bash
 # 1. Get the code
-git clone https://github.com/chiemc/ai_powered_search_engine.git
-cd ai_powered_search_engine
+git clone https://github.com/chiemc/IncognitAI.git
+cd IncognitAI
 
 # 2. Create your config file, then edit .env and choose a password
 cp .env.example .env
@@ -103,7 +105,7 @@ The question is sent to the search engine as written, so phrase it the way you'd
 | `ModuleNotFoundError` | The virtual environment isn't active | `source .venv/bin/activate` |
 | `password authentication failed` | `.env` was changed after the database was first created | `docker compose down -v` (this deletes stored history), then `docker compose up -d` |
 | `403` / `402` / `405` / `Failed to resolve` warnings in the log | Some websites block bots, are paywalled, or no longer exist | Normal: those pages are skipped. If answers are thin, raise the results slider. |
-| Answers take several minutes | Not enough RAM, so the system is swapping to disk | Close other apps (see [Known limitations](#known-limitations)) |
+| Answers take several minutes instead of 30–60 seconds | Not enough free RAM, so the system is swapping to disk | Close other apps, and check that only one copy of the app is running: `lsof -i :7860` |
 
 
 ## How it was debugged
@@ -112,7 +114,7 @@ Getting this running took 17 fixes, including a native crash in the model loader
 
 ## Known limitations
 
-- **Slow on a 16 GB Mac: 4–5 minutes per answer.** Qwen at fp16 (about 6 GB), Florence-2 at fp32 on the CPU, LaBSE and Docker together pushed the system about 10 GB into swap. Web search and page fetching take only about 30 seconds. Nearly all the time goes to LLM generation, and that is slowed by swapping.
+- **30–60 seconds per answer on a 16 GB M1 Pro.** That compares with a few seconds for hosted AI search. It covers the web search, page downloads and answer generation with Qwen at fp16 (about 6 GB). Memory is tight: Qwen, Florence-2 (fp32 on the CPU), LaBSE and Docker together use most of 16 GB. If anything else large is running, including an accidental second copy of the app, the system starts swapping to disk and answers can take several minutes.
 - **Image search describes images; it can't recognize faces.** Florence-2 can read text in an image and describe what's in it ("a man with a beard"), but it can't tell you *who* someone is. A screenshot works when the person's name is visible on screen.
 - **Follow-up questions are searched literally.** "When was it founded?" goes to the search engine word for word, so it returns unrelated results. The chat history reaches the LLM but not the search.
 - **SQL is built with f-strings** in `memory.py`. Quotes are escaped, but parameterized queries would be safer.

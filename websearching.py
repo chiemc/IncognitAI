@@ -21,7 +21,7 @@ encoder = SentenceTransformer("sentence-transformers/LaBSE")
 # Recursive splitting falls back to single newlines/spaces, so chunks actually stay near 1000 characters
 splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
 # Identify the bot honestly (Wikipedia's robot policy rate-limits generic or spoofed user agents)
-HEADERS = {"User-Agent": "PrAIvateSearch/0.1 (personal AI search project; python-requests)"}
+HEADERS = {"User-Agent": "IncognitAI/0.1 (personal AI search project; python-requests)"}
 collection_name = f"cute_kitty_{rnd.randint(1,10000)}"
 qdrant_client = QdrantClient("http://localhost:6333")
 searcher = NeuralSearcher(collection_name, qdrant_client, encoder)

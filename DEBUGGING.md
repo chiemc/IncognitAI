@@ -102,7 +102,7 @@ The code used `device_map="cuda:0"` with bitsandbytes 4-bit quantization, and my
 `ModuleNotFoundError: No module named 'psycopg'`. SQLAlchemy 2.1 maps `postgresql://` to psycopg **3** by default, but the project installs `psycopg2-binary`. **Fix:** name the driver in the URL: `postgresql+psycopg2://...`.
 
 ### HTTP 403 when fetching result pages
-boilerpy3's `get_content_from_url` uses Python's default `urllib` user agent, which sites like Wikipedia block. A spoofed browser user agent got rate-limited too, with a message pointing to Wikipedia's robot policy. **Fix:** download pages with `requests` using an honest, descriptive user agent (`PrAIvateSearch/0.1 (...)`) and a timeout. Pages that still fail (bot protection, paywalls, dead links) are skipped. **Lesson:** Read the robot policy. Identifying your client honestly works better than impersonating a browser.
+boilerpy3's `get_content_from_url` uses Python's default `urllib` user agent, which sites like Wikipedia block. A spoofed browser user agent got rate-limited too, with a message pointing to Wikipedia's robot policy. **Fix:** download pages with `requests` using an honest, descriptive user agent (`IncognitAI/0.1 (...)`) and a timeout. Pages that still fail (bot protection, paywalls, dead links) are skipped. **Lesson:** Read the robot policy. Identifying your client honestly works better than impersonating a browser.
 
 ### Foreign key order when resetting tables
 The code ran `DROP TABLE conversations` before `DROP TABLE messages`, but `messages` has a foreign key to `conversations`. The first drop failed, and the error was swallowed by a `try/except` that only warned, so stale tables survived. **Fix:** drop the child table first.
@@ -110,7 +110,7 @@ The code ran `DROP TABLE conversations` before `DROP TABLE messages`, but `messa
 ### Infrastructure
 - **compose.yaml:** a `networds:` typo; a `ui` service that built from a `chatbot-ui/` directory that didn't exist; and an unpinned `postgres` image. Postgres 18+ won't start with a volume mounted at `/var/lib/postgresql/data`. **Fix:** remove the `ui` service and pin `postgres:17`.
 - **`unknown shorthand flag: 'd' in -d`:** Docker shows this when it doesn't recognize the subcommand, e.g. a typo in `compose` or a terminal that can't see the Compose plugin. The message is misleading because it points at `-d`, not the actual problem.
-- **Docker Desktop crashed** during testing because of memory pressure. Qwen, Florence-2, LaBSE and Docker together pushed a 16 GB machine about 10 GB into swap.
+- **Docker Desktop crashed** during testing because of memory pressure. A leftover second copy of the app was still running in the background, because a `pkill -f 'python …'` didn't match macOS's `Python` process name. With two copies of the models loaded, the 16 GB machine went about 10 GB into swap and answers took 4–5 minutes instead of the usual 30–60 seconds.
 
 ---
 

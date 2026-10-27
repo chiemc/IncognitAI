@@ -169,7 +169,7 @@ The question is sent to the search engine as written, so phrase it the way you'd
 
 ## How it was debugged
 
-Getting this running took 17 fixes, including a native crash in the model loader, a search library that silently returned nothing, and a RAG pipeline that was giving the model the wrong text. That last one surfaced as confident but wrong answers, and I fixed it over three rounds of flagging bad answers and tracing their causes. The full write-up, with symptom, cause, fix and lesson for each problem, is in **[DEBUGGING.md](DEBUGGING.md)**.
+Getting this running, and then getting its answers right, took dozens of fixes. They include a native crash in the model loader, a search library that silently returned nothing, and a RAG pipeline that was giving the model the wrong text. The wrong text showed up as confident but wrong answers, which I fixed over five rounds of flagging bad answers and tracing each one to its cause. Later, profiling showed the model wasn't the bottleneck I had assumed, and switching the model runtime cut its memory use from about 9 GB to 2.6 GB. The full write-up, with the symptom, cause, fix and lesson for each problem, is in **[DEBUGGING.md](DEBUGGING.md)**.
 
 ## Known limitations
 

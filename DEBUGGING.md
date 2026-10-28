@@ -8,6 +8,7 @@ Each entry gives the symptom, the root cause, the fix, and what it taught me. Th
 - [Highlights](#highlights)
   - [The app ran, but its answers were confidently wrong](#the-app-ran-but-its-answers-were-confidently-wrong)
   - [Measuring before optimizing: switching the model runtime](#measuring-before-optimizing-switching-the-model-runtime)
+  - [Making follow-up questions work](#making-follow-up-questions-work)
   - [Native crash: `malloc: double free` while loading the model](#native-crash-malloc-double-free-while-loading-the-model)
   - [Google search silently returned zero results](#google-search-silently-returned-zero-results)
   - [RAG chunks were 27× too big](#rag-chunks-were-27-too-big)
@@ -69,6 +70,26 @@ The real win is **memory**. Running out of RAM, not the model itself, is what ha
 **A hidden network dependency.** After deleting an old model from the cache, I tested the app with Hugging Face downloads blocked (`HF_HUB_OFFLINE=1`) to prove nothing still needed it. The deletion was fine, but the app failed to start anyway: `Llama.from_pretrained` asks huggingface.co for the model's file list on *every* start, even when the model is already on disk. A "private, local" app that can't start without the internet undercut the project's main claim. **Fix:** fetch the files with `hf_hub_download`, which reuses the copies on disk and respects offline mode, then pass the local path to `Llama(model_path=...)`. Now all three models load fully offline.
 
 **Lessons:** Profile before optimizing, since the bottleneck I assumed wasn't the real one. And a benchmark is only fair if both sides get identical input.
+
+### Making follow-up questions work
+
+**Symptom:** "What other movies has he made?" after a question about Oppenheimer gave a useless answer. The model *did* see the conversation history, but the search got the bare follow-up, so DuckDuckGo returned pages that had nothing to do with Christopher Nolan.
+
+**Fix: query rewriting.** Before searching, the model rewrites a follow-up into a standalone query using the last two exchanges. Three safeguards keep a small model from doing harm:
+1. **A word check runs first.** Only questions containing a referring word (*he, she, it, they, that, there*…) are sent to the model to be rewritten. Clear changes of topic ("What's the weather in Paris?") skip the model entirely, so they can't be pulled toward the old topic.
+2. **A strict prompt:** replace referring words, change nothing else, and return the question unchanged if it doesn't refer to the conversation. It runs at `temperature=0` so the same input always gives the same search.
+3. **The rewritten search is shown** at the top of the answer ("🔎 Searched for: …"), so a wrong guess is visible instead of silently producing a confident wrong answer.
+
+**Bug found by flagging: the rewrite echoed its own instructions.** "Is it going to rain in Florence tomorrow" contains "it", so it went to the rewrite step, and the model returned **"no quotes,no search"**: words from my prompt ("Reply with only the search query: no quotes, no explanation"). That was searched, and the answer was about Google AI Overviews. I couldn't reproduce it, because restarting the app had cleared the conversation that triggered it. So the fix couldn't depend on the trigger: a small model *will* occasionally produce garbage, and the app has to catch it.
+- **Validate the output:** a real rewrite only replaces referring words, so it must keep at least half of the question's meaningful words (*rain, Florence, tomorrow*). Otherwise the original question is searched.
+- **Ignore cosmetic rewrites:** if the rewrite adds no new meaningful word (just a "?" or "that" → "the"), the question didn't need rewriting, so it's searched as typed and no "Searched for" line is shown.
+- **Show, don't tell:** the prompt now gives two examples (a follow-up and a change of topic) instead of formatting rules the model could repeat back.
+
+A stress test paired 5 new-topic questions with all 14 conversations in my flagged dataset (70 cases). Before the cosmetic check, only 11/70 came back unchanged; after it, **70/70**. The original 10-case test set still passed. **Lesson:** never feed a small model's output into the next step without checking it, and test with a larger, more varied set than the cases you designed the feature around.
+
+Image searches skip rewriting, because in "Who is this?" next to an uploaded image, "this" means the image, not the conversation.
+
+**Testing:** 10 cases, including follow-ups, changes of topic with and without referring words ("Is *it* going to rain in Paris tomorrow?" must not become a question about Oppenheimer), and a question with no history. **10/10 passed**, with rewrites taking 0.2–0.4 s. Known limits, found on purpose: with two people in the history, "he" resolves to the most recent one; follow-ups with no referring word ("What about Barbie?") stay literal.
 
 ### Native crash: `malloc: double free` while loading the model
 
@@ -149,4 +170,5 @@ The code ran `DROP TABLE conversations` before `DROP TABLE messages`, but `messa
 - **`NameError: context` on every successful search:** `context` was only assigned in the "no results" branch. A variable assigned on only some branches is a latent bug.
 - **A typo'd environment variable:** `os.getenv("PG_DUB")` silently returned `None`, so the database URL ended in `/None`. For required configuration, `os.environ["KEY"]` fails loudly.
 - **A malformed f-string:** in `f"{date.minute:{date.second}}"`, the nested braces made `second` the *format width* for `minute`.
+- **A setting that only made answers worse:** the tutorial's "Enable Rag" checkbox survived after RAG became the main way the model reads its sources. Turning it off gave the model only the start of each page, and the app *still* split, embedded and stored every page (~2 s) that nothing would read. I removed the setting and the unused code path: RAG is always on, and the passage count lives in one constant (`RAG_PASSAGES`).
 - **Missing dependencies:** `gradio`, `pillow`, `accelerate`, `nltk`, `rake-nltk` and a page-text extractor were missing from `requirements.txt`. rake-nltk also needed NLTK data at runtime. RAKE was later removed entirely: its keywords dropped important words from image captions (`Bandwidth's Summer Internship Program` became `summer internship program`), so the full caption is now searched along with the user's question.

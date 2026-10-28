@@ -14,8 +14,8 @@ import time
 import uuid
 from datetime import datetime
 
-# How much of each page to show the model when RAG is off
-MAX_PAGE_CHARS = 1500
+# How many of the most relevant passages (about 1000 characters each) the model reads per question
+RAG_PASSAGES = 5
 
 encoder = SentenceTransformer("sentence-transformers/LaBSE")
 # Recursive splitting falls back to single newlines/spaces, so chunks actually stay near 1000 characters
@@ -77,7 +77,7 @@ def date_for_debug():
     s = f"{date.year}-{date.month}-{date.day} {date.hour}:{date.minute:02d}:{date.second:02d}"
     return s
 
-def web_search(query, num_results=5, enable_rag=False, debug = True):
+def web_search(query, num_results=5, debug = True):
     global qdrant_client, encoder, collection_name
     search_results = []
     # Google now blocks scraping libraries like googlesearch-python, so use DuckDuckGo instead
@@ -116,15 +116,11 @@ def web_search(query, num_results=5, enable_rag=False, debug = True):
         return sources.index(url) + 1
 
     context = ""
-    if enable_rag and pages:
-        # Retrieve the chunks most similar to the user's question, from this search's pages only:
-        # chunks left over from earlier searches kept leaking unrelated topics into answers
-        for hit in searcher.search(query, 5, urls=[url for url, _ in pages]):
+    if pages:
+        # RAG: retrieve the chunks most similar to the user's question, from this search's pages only
+        # (chunks left over from earlier searches kept leaking unrelated topics into answers)
+        for hit in searcher.search(query, RAG_PASSAGES, urls=[url for url, _ in pages]):
             context += f"[{source_num(hit['url'])}] {hit['text']}\n\n"
-    else:
-        # Without RAG, give the model the start of each page instead
-        for url, content in pages:
-            context += f"[{source_num(url)}] {content[:MAX_PAGE_CHARS]}\n\n"
 
     # The model doesn't know the current date, so it treats recent years as "the future" without this
     today = f"TODAY'S DATE: {datetime.now():%B %d, %Y}\n\n"

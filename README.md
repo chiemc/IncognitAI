@@ -145,13 +145,32 @@ If you deleted the wrong model by mistake, nothing is lost for good: the app dow
 
 ## Usage tips
 
-The question is sent to the search engine as written, so phrase it the way you'd type into a search engine:
-- **Name the subject every time.** Follow-up questions are not rewritten yet, so "When was it founded?" searches for exactly that. Write "When was Canberra founded?" instead.
+### Asking good questions
+Your question is sent to the search engine, so phrase it the way you'd type a web search:
+- **Follow-up questions work** when they use words like *he, she, it, they* or *there*. "What other movies has he made?" after a question about Oppenheimer is searched as "What other movies has Christopher Nolan made?". The rewritten search appears at the top of the answer as **🔎 Searched for**; if it guessed wrong, rephrase with the name. Follow-ups without such a word ("What about Barbie?") are searched as typed, so name the subject in those.
 - **Say whether you mean a character or the real person.** "John B and Sarah relationship Outer Banks" vs. "Chase Stokes girlfriend."
 - **Ask one thing per question**, and include the year or season for anything that changes over time.
 - **For image searches, also type a question** (e.g. "What is this company's internship program about?"). The question and the image description are searched together.
-- Keep **Enable Rag** on. It gives the model the passages most relevant to your question.
 - Answers cite sources inline ([1], [2]), and the links are listed under each answer. Click through to check important facts.
+
+### How answers are built (RAG is always on)
+IncognitAI doesn't let the model read whole web pages. That would be too much text for a small model. Instead, every downloaded page is split into passages of about 1,000 characters, and the **5 passages most relevant to your question** are picked from all of them using retrieval-augmented generation (RAG). The model writes its answer from only those passages, which is why it can find an answer buried in the middle of a long article. RAG is always on; there's no setting for it.
+
+### Maximum Number of Search Results
+This slider (1–10, default 5) sets **how many web pages are downloaded and read** for each question.
+- **You usually get a few fewer pages than the number you pick.** Duplicate links are removed, and some sites block automated visitors, are paywalled or no longer exist. Those show up as `403`, `402` or `Failed to resolve` warnings in the log and are skipped.
+- **More pages give a better chance of finding the answer,** because RAG has more passages to pick from. They also take longer, about 1 second per page, since each page has to be downloaded.
+- **More pages don't make the answer longer or slower to write.** The model always reads the same 5 passages, however many pages they come from.
+
+| Setting | When to use it |
+|---|---|
+| **5** (default) | Most questions |
+| **7–8** | An answer seems thin, or the log shows many blocked pages |
+| **3** | Simple facts when you want speed ("Who directed Oppenheimer?") |
+
+### Troubleshooting tools: Debug and Flag
+- **Debug** (on by default) prints each step in the terminal running the app: the search results, pages that failed to load, the rewritten follow-up question, and the exact prompt given to the model. It doesn't change the answer. When an answer is wrong, the log shows whether the right information reached the model at all.
+- **Flag** saves the question, settings, answer and any uploaded image to `.gradio/flagged/`. Use it to collect bad answers and review them later. Flagged data stays on your computer, and `.gitignore` keeps it out of the repository.
 
 ## Troubleshooting
 
@@ -175,6 +194,7 @@ Getting this running, and then getting its answers right, took dozens of fixes. 
 
 - **About 10–20 seconds per text answer on a 16 GB M1 Pro, plus about 9 seconds when an image is attached.** That compares with a few seconds for hosted AI search. Measured breakdown: web search ~2.5 s, downloading and extracting 5 pages ~4 s, embedding ~2 s, generating the answer ~2–6 s, captioning an image ~8.5 s. Most of the time now goes to the web, not the model. If memory runs short (for example, an accidental second copy of the app), the system swaps to disk and answers can take minutes.
 - **Image search describes images; it can't recognize faces.** Florence-2 can read text in an image and describe what's in it ("a man with a beard"), but it can't tell you *who* someone is. A screenshot works when the person's name is visible on screen.
-- **Follow-up questions are searched literally.** "When was it founded?" goes to the search engine word for word, so it returns unrelated results. The chat history reaches the LLM but not the search.
+- **Follow-up questions are rewritten only when they contain a referring word** (*he, she, it, they, that, there*…). With several people in the recent conversation, "he" is assumed to mean the most recent one. Follow-ups without a referring word, and questions next to an uploaded image, are searched as typed.
+- **One shared conversation:** all browser tabs share a single conversation history, which is cleared when the app restarts.
 - **SQL is built with f-strings** in `memory.py`. Quotes are escaped, but parameterized queries would be safer.
 - **Debug output:** `print` statements instead of a logging framework.

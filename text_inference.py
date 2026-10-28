@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from memory import ConversationHistory, PGClient
 import os
 import random as r
+import re
 from websearching import date_for_debug
 
 load_dotenv()
@@ -89,6 +90,85 @@ def pipe(prompt: list, temperature: float, top_p: float, max_new_tokens: int, re
         repeat_penalty=repetition_penalty,
     )
     return out["choices"][0]["message"]["content"]
+
+# Words that usually point back to something earlier in the conversation ("What other movies has HE made?").
+# Questions without any of them are treated as new searches and never rewritten.
+REFERRING_WORDS = re.compile(
+    r"\b(he|him|his|she|her|hers|it|its|they|them|their|theirs|this|that|these|those|there|then)\b",
+    re.IGNORECASE,
+)
+
+# Examples show the format instead of describing it: the model once echoed an instruction
+# ("no quotes, no explanation") back as the "search query"
+REWRITE_PROMPT = (
+    "You turn follow-up questions into standalone web search queries. "
+    "Replace words like he, she, it, they, that or there with the specific person, thing or place "
+    "they refer to in the conversation. Change nothing else. "
+    "If the question does not refer to anything in the conversation, repeat it exactly as it is.\n\n"
+    "Examples:\n"
+    "Conversation about Oppenheimer and Christopher Nolan. Follow-up: What other movies has he made?\n"
+    "What other movies has Christopher Nolan made?\n\n"
+    "Conversation about Oppenheimer and Christopher Nolan. Follow-up: Is it going to snow in Denver this week?\n"
+    "Is it going to snow in Denver this week?"
+)
+
+# Words that carry no topic of their own, ignored when checking that a rewrite kept the question's meaning
+FILLER_WORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "am", "do", "does", "did", "has", "have", "had",
+    "will", "would", "can", "could", "should", "shall", "may", "might", "to", "of", "in", "on", "at", "by", "for",
+    "from", "with", "about", "as", "and", "or", "but", "if", "so", "too", "also", "what", "who", "whom", "whose",
+    "which", "when", "where", "why", "how", "any", "some", "other", "more", "most", "very", "not", "no", "yes",
+    "i", "me", "my", "you", "your", "we", "our",
+}
+
+def keeps_question_words(question: str, rewritten: str) -> bool:
+    """A real rewrite only replaces referring words, so it keeps the question's other meaningful words."""
+    words = {w for w in re.findall(r"[\w'’]+", question.lower()) if w not in FILLER_WORDS and not REFERRING_WORDS.fullmatch(w)}
+    if not words:
+        return True  # e.g. "Who is he?": nothing to check against
+    kept = sum(1 for w in words if w in rewritten.lower())
+    return kept / len(words) >= 0.5
+
+def adds_new_words(question: str, rewritten: str) -> bool:
+    """A real rewrite adds what the question referred to (e.g. "Christopher Nolan"), not just punctuation or "the"."""
+    question_words = set(re.findall(r"[\w'’]+", question.lower()))
+    return any(w not in question_words and w not in FILLER_WORDS for w in re.findall(r"[\w'’]+", rewritten.lower()))
+
+def rewrite_query(question: str, debug: bool = False, history: list = None) -> str:
+    """Rewrite a follow-up question into a standalone search query, using the recent conversation."""
+    if history is None:
+        history = convo_hist.get_conversation_history()[1:]  # skip the system prompt
+    history = history[-MAX_HISTORY_MESSAGES:]
+    if not history or not REFERRING_WORDS.search(question):
+        return question
+
+    # Answers are shortened: the rewrite only needs to know who or what was being discussed
+    transcript = "\n".join(
+        f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:300]}" for m in history
+    )
+    rewritten = pipe(
+        [
+            {"role": "system", "content": REWRITE_PROMPT},
+            {"role": "user", "content": f"Conversation:\n{transcript}\n\nFollow-up: {question}"},
+        ],
+        temperature=0,  # the same question and history should always give the same search
+        top_p=1,
+        max_new_tokens=40,
+        repetition_penalty=1.0,
+    )
+    rewritten = rewritten.strip().splitlines()[0].strip().strip('"').strip() if rewritten.strip() else ""
+    # Fall back to the original question if the model returned nothing useful, or something that
+    # dropped the question's meaning (it once returned "no quotes,no search" for a weather question)
+    if not rewritten or len(rewritten) > 200 or not keeps_question_words(question, rewritten):
+        if debug:
+            print(f"[{date_for_debug()}] REWRITE REJECTED: {rewritten!r}; searching the original question")
+        return question
+    # Cosmetic changes (an added "?", "that" -> "the") mean the question didn't need rewriting
+    if not adds_new_words(question, rewritten):
+        return question
+    if debug:
+        print(f"[{date_for_debug()}] REWRITTEN QUERY: {question!r} -> {rewritten!r}")
+    return rewritten
 
 def text_inference(message, debug, query=None):
     # History holds only past questions and answers; the search context is sent for the current turn only
